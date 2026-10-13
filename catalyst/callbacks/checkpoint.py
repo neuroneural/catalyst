@@ -1,21 +1,21 @@
-from typing import Any, List
+from typing import Any, List, Optional
 from collections import namedtuple
 import json
 import os
 import shutil
 
+from accelerate.state import DistributedType
 import torch
 
+from catalyst import SETTINGS
 from catalyst.core.callback import ICheckpointCallback
 from catalyst.core.runner import IRunner
-from catalyst.utils import (
-    load_checkpoint,
-    pack_checkpoint,
-    save_checkpoint,
-    unpack_checkpoint,
-)
+from catalyst.utils import load_checkpoint, pack_checkpoint, unpack_checkpoint
 
-Checkpoint = namedtuple("Checkpoint", field_names=["obj", "logpath", "metric"])
+if SETTINGS.xla_required:
+    import torch_xla.core.xla_model as xm
+
+Checkpoint = namedtuple("Checkpoint", field_names=["logpath", "metric"])
 
 
 class CheckpointCallback(ICheckpointCallback):
@@ -82,21 +82,45 @@ class CheckpointCallback(ICheckpointCallback):
 
     def _save(self, runner: "IRunner", obj: Any, logprefix: str) -> str:
         logpath = f"{logprefix}.pth"
+        runner.engine.wait_for_everyone()
         if self.mode == "model":
             if issubclass(obj.__class__, torch.nn.Module):
-                runner.engine.wait_for_everyone()
                 obj = runner.engine.unwrap_model(obj)
-                runner.engine.save(obj.state_dict(), logpath)
+                checkpoint = obj.state_dict()
             elif isinstance(obj, dict):
                 # obj = dict(model=obj)  # noqa: C408
                 checkpoint = pack_checkpoint(model=obj)
-                save_checkpoint(checkpoint, logpath)
             else:
                 raise NotImplementedError()
         else:
+            # pack_checkpoint unwraps DDP/DataParallel modules via get_nn_from_ddp_module
             checkpoint = pack_checkpoint(**obj)
-            save_checkpoint(checkpoint, logpath)
+        if runner.engine.distributed_type == DistributedType.TPU:
+            # XLA save is collective: all ranks participate, only global rank 0 writes.
+            xm.save(checkpoint, logpath, master_only=True, global_master=True)
+        elif runner.engine.is_main_process:
+            # Older Accelerate versions save once per node, not once globally.
+            runner.engine.save(checkpoint, logpath)
+        runner.engine.wait_for_everyone()
         return logpath
+
+    def _publish_best(self, runner: "IRunner") -> Optional[str]:
+        if not self._storage:
+            return None
+        srcpath = self._storage[0].logpath
+        dstpath = f"{self.logdir}/{self.mode}.best.pth"
+        is_copy_needed = os.path.isfile(srcpath) and (
+            os.path.abspath(srcpath) != os.path.abspath(dstpath)
+        )
+
+        # every rank reaches both barriers; only the main process touches the file
+        runner.engine.wait_for_everyone()
+        if runner.engine.is_main_process and is_copy_needed:
+            tmppath = f"{dstpath}.tmp"
+            shutil.copyfile(srcpath, tmppath)
+            os.replace(tmppath, dstpath)
+        runner.engine.wait_for_everyone()
+        return dstpath
 
     def _load(
         self,
@@ -159,19 +183,22 @@ class CheckpointCallback(ICheckpointCallback):
 
         logprefix = f"{self.logdir}/{self.mode}.{runner.epoch_step:04d}"
         logpath = self._save(runner, obj, logprefix)
-        self._storage.append(Checkpoint(obj=obj, logpath=logpath, metric=score))
+        self._storage.append(Checkpoint(logpath=logpath, metric=score))
         self._storage = sorted(
             self._storage, key=lambda x: x.metric, reverse=not self._minimize
         )
         if len(self._storage) > self.topk:
             last_item = self._storage.pop(-1)
-            if os.path.isfile(last_item.logpath):
+            # checkpoints are written by the main process, so only it removes them
+            if runner.engine.is_main_process and os.path.isfile(last_item.logpath):
                 try:
                     os.remove(last_item.logpath)
                 except OSError:
                     pass
-            elif os.path.isdir(last_item.logpath):
-                shutil.rmtree(last_item.logpath, ignore_errors=True)
+        if runner.engine.is_main_process:
+            self._dump_storage()
+
+    def _dump_storage(self) -> None:
         with open(f"{self.logdir}/{self.mode}.storage.json", "w") as fout:
             stats = {
                 "logdir": str(self.logdir),
@@ -208,8 +235,7 @@ class CheckpointCallback(ICheckpointCallback):
         self._handle_epoch(runner=runner, score=score)
 
         if self.save_best:
-            best_logprefix = f"{self.logdir}/{self.mode}.best"
-            self._save(runner, self._storage[0].obj, best_logprefix)
+            self._publish_best(runner)
 
     def on_epoch_end_last(self, runner: "IRunner") -> None:
         """Event handler."""

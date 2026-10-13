@@ -296,8 +296,8 @@ class IRunner(ICallback, ILogger, ABC):
         assert self.loader is not None
         self.is_train_loader: bool = self.loader_key.startswith("train")
         self.is_valid_loader: bool = self.loader_key.startswith("valid")
-        self.is_infer_loader: bool = self.loader_key.startswith("infer")
-        assert self.is_train_loader or self.is_valid_loader or self.is_infer_loader
+        # Anything that is not train or valid is inference
+        self.is_infer_loader: bool = not (self.is_train_loader or self.is_valid_loader)
         self.loader_batch_size: int = get_loader_batch_size(self.loader)
         self.loader_batch_len: int = len(self.loader)
         self.loader_sample_len: int = get_loader_num_samples(self.loader)
@@ -335,6 +335,14 @@ class IRunner(ICallback, ILogger, ABC):
 
     def on_loader_end(self, runner: "IRunner"):
         """Event handler."""
+        if self.engine.is_ddp:
+            # loader metrics are per-rank up to here, so average them over ranks;
+            # each key is a collective call, so ranks must use the same key order
+            metrics = {
+                k: float(self.loader_metrics[k]) for k in sorted(self.loader_metrics)
+            }
+            metrics = self.engine.mean_reduce_ddp_metrics(metrics)
+            self.loader_metrics.update({k: float(v) for k, v in metrics.items()})
         self.log_metrics(metrics=self.loader_metrics, scope="loader")
         self.epoch_metrics[self.loader_key] = {
             key: float(value) for key, value in self.loader_metrics.items()
