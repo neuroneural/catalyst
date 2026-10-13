@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Distributed loader metrics are reduced in a consistent key order across ranks.
+
+- Checkpoints are written by the global main process, including multi-node runs; XLA ranks still participate in collective saving.
+
 - `CheckpointCallback` saved the current weights as `{mode}.best.pth` every epoch; the file is now a copy of the best epoch's checkpoint [#2](https://github.com/neuroneural/catalyst/pull/2)
 
 - `CheckpointCallback` wrote `runner`-mode and dict-model checkpoints from every DDP process [#2](https://github.com/neuroneural/catalyst/pull/2)
