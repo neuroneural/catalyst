@@ -337,8 +337,10 @@ class IRunner(ICallback, ILogger, ABC):
         """Event handler."""
         if self.engine.is_ddp:
             # loader metrics are per-rank up to here, so average them over ranks;
-            # each key is a collective call, so every rank must hold the same keys
-            metrics = {k: float(v) for k, v in self.loader_metrics.items()}
+            # each key is a collective call, so ranks must use the same key order
+            metrics = {
+                k: float(self.loader_metrics[k]) for k in sorted(self.loader_metrics)
+            }
             metrics = self.engine.mean_reduce_ddp_metrics(metrics)
             self.loader_metrics.update({k: float(v) for k, v in metrics.items()})
         self.log_metrics(metrics=self.loader_metrics, scope="loader")

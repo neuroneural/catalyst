@@ -100,6 +100,9 @@ class _DDPRunner(dl.Runner):
         else:
             self.loader_metrics["loss"] = float(self.batch_metrics["loss"])
         self.loader_metrics["rank"] = float(rank)
+        # Identical keys can arrive in different insertion orders on each rank.
+        pairs = [("alpha", 2.0 + 2 * rank), ("beta", 10.0 + 10 * rank)]
+        self.loader_metrics.update(dict(pairs if rank == 0 else reversed(pairs)))
         super().on_loader_end(runner)
 
     def on_epoch_end(self, runner):
@@ -158,6 +161,8 @@ def test_ddp_metrics_and_best_checkpoint(tmp_path, mode):
     for report in reports:
         assert [m["rank"] for m in report["valid"]] == [0.5] * len(MEAN_SCRIPT)
         assert [m["loss"] for m in report["valid"]] == pytest.approx(MEAN_SCRIPT)
+        assert [m["alpha"] for m in report["valid"]] == [3.0] * len(MEAN_SCRIPT)
+        assert [m["beta"] for m in report["valid"]] == [15.0] * len(MEAN_SCRIPT)
         assert report["storage"] == [f"{mode}.{BEST_EPOCH:04d}.pth"]
 
     # best.pth holds the epoch that is best by the averaged metric

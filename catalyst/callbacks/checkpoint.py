@@ -4,11 +4,16 @@ import json
 import os
 import shutil
 
+from accelerate.state import DistributedType
 import torch
 
+from catalyst import SETTINGS
 from catalyst.core.callback import ICheckpointCallback
 from catalyst.core.runner import IRunner
 from catalyst.utils import load_checkpoint, pack_checkpoint, unpack_checkpoint
+
+if SETTINGS.xla_required:
+    import torch_xla.core.xla_model as xm
 
 Checkpoint = namedtuple("Checkpoint", field_names=["logpath", "metric"])
 
@@ -77,25 +82,26 @@ class CheckpointCallback(ICheckpointCallback):
 
     def _save(self, runner: "IRunner", obj: Any, logprefix: str) -> str:
         logpath = f"{logprefix}.pth"
+        runner.engine.wait_for_everyone()
         if self.mode == "model":
             if issubclass(obj.__class__, torch.nn.Module):
-                runner.engine.wait_for_everyone()
                 obj = runner.engine.unwrap_model(obj)
-                runner.engine.save(obj.state_dict(), logpath)
+                checkpoint = obj.state_dict()
             elif isinstance(obj, dict):
                 # obj = dict(model=obj)  # noqa: C408
                 checkpoint = pack_checkpoint(model=obj)
-                runner.engine.wait_for_everyone()
-                # engine.save writes on the main process only; a plain torch.save here
-                # let every DDP rank write the same path at the same time.
-                runner.engine.save(checkpoint, logpath)
             else:
                 raise NotImplementedError()
         else:
             # pack_checkpoint unwraps DDP/DataParallel modules via get_nn_from_ddp_module
             checkpoint = pack_checkpoint(**obj)
-            runner.engine.wait_for_everyone()
+        if runner.engine.distributed_type == DistributedType.TPU:
+            # XLA save is collective: all ranks participate, only global rank 0 writes.
+            xm.save(checkpoint, logpath, master_only=True, global_master=True)
+        elif runner.engine.is_main_process:
+            # Older Accelerate versions save once per node, not once globally.
             runner.engine.save(checkpoint, logpath)
+        runner.engine.wait_for_everyone()
         return logpath
 
     def _publish_best(self, runner: "IRunner") -> Optional[str]:
