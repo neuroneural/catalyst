@@ -218,3 +218,29 @@ def test_loader_key_roles() -> None:
     assert callback.roles["infer"] == (False, False, True, False, False)
     assert callback.roles["test"] == (False, False, True, False, False)
     assert "loss" in runner.epoch_metrics["test"]
+
+
+def test_cpu_loader_with_private_loader_attribute():
+    class CustomLoader(DataLoader):
+        def __init__(self, dataset):
+            super().__init__(dataset, batch_size=2)
+            self._loader = iter(dataset)
+
+    class CustomCPUEngine(dl.CPUEngine):
+        def prepare_data_loader(self, loader, *args, **kwargs):
+            return loader
+
+    dataset = DummyDataset()
+    model = nn.Linear(dataset.features_dim, dataset.out_dim)
+    runner = SupervisedRunner()
+    runner.train(
+        engine=CustomCPUEngine(),
+        loaders={"train": CustomLoader(dataset)},
+        model=model,
+        criterion=nn.MSELoss(),
+        optimizer=torch.optim.SGD(model.parameters(), lr=0.1),
+        num_epochs=1,
+    )
+    assert runner.loader_batch_size == 2
+    assert runner.loader_sample_len == len(dataset)
+    assert runner.loader_batch_step == 2

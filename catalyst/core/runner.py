@@ -15,6 +15,7 @@ from catalyst.core.misc import (
     is_str_intersections,
     sort_callbacks_by_order,
 )
+from catalyst.data.loader import ILoaderWrapper
 from catalyst.typing import (
     RunnerCriterion,
     RunnerModel,
@@ -308,9 +309,16 @@ class IRunner(ICallback, ILogger, ABC):
         self.is_valid_loader: bool = self.loader_key.startswith("valid")
         # Anything that is not train or valid is inference
         self.is_infer_loader: bool = not (self.is_train_loader or self.is_valid_loader)
-        # accelerate's TPU loader wrapper hides the loader attributes
-        inner_loader = getattr(self.loader, "_loader", None)
-        loader = self.loader if inner_loader is None else inner_loader
+        loader = self.loader
+        if self.engine.distributed_type in ("TPU", "XLA"):
+            from torch_xla.distributed.parallel_loader import MpDeviceLoader
+
+            # Catalyst wrappers can sit outside Accelerate's XLA device loader.
+            device_loader = loader
+            while isinstance(device_loader, ILoaderWrapper):
+                device_loader = device_loader.origin
+            if isinstance(device_loader, MpDeviceLoader):
+                loader = device_loader._loader
         self.loader_batch_size: int = get_loader_batch_size(loader)
         self.loader_batch_len: int = len(self.loader)
         self.loader_sample_len: int = get_loader_num_samples(loader)
