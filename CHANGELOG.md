@@ -8,11 +8,30 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- `catalyst-tune` for Config API added [#1411](https://github.com/catalyst-team/catalyst/pull/1411)
+-
+
+### Changed
+
+-
+
+### Removed
+
+-
+
+### Fixed
+
+-
+
+
+## [22.04.1] - 2026-10-22
+
+### Added
 
 - DDP: `runner.loader_metrics` are averaged over processes at loader end, so every rank logs and selects checkpoints by the same values [#2](https://github.com/neuroneural/catalyst/pull/2)
 
 - CPU (gloo) DDP test for loader-metric reduction and checkpointing [#2](https://github.com/neuroneural/catalyst/pull/2)
+
+- `examples/notebooks/XLA_smoke.ipynb`: Colab TPU smoke test (single device, multi-process, checkpoints, ResNet9 on CIFAR10)
 
 ### Changed
 
@@ -33,6 +52,29 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - `CheckpointCallback` saved the current weights as `{mode}.best.pth` every epoch; the file is now a copy of the best epoch's checkpoint [#2](https://github.com/neuroneural/catalyst/pull/2)
 
 - `CheckpointCallback` wrote `runner`-mode and dict-model checkpoints from every DDP process [#2](https://github.com/neuroneural/catalyst/pull/2)
+
+- `AttributeError: TPU` with accelerate>=1.0, which removed `DistributedType.TPU` (renamed `XLA` in 0.28); both names are now matched as strings
+
+- `AUCCallback` crashed with accelerate>=1.0, which removed `Accelerator.use_fp16`; it now checks `mixed_precision`
+
+- Loader wrappers (`BatchLimitLoaderWrapper`, `BatchPrefetchLoaderWrapper`, used by `overfit=True`) returned `None` for the wrapped loader's attributes with accelerate>=0.34
+
+- `DistributedXLAEngine` passes `nprocs=None` to `xmp.spawn`, since torch_xla 2.9 rejects `nprocs=8`
+
+- `AttributeError: 'MpDeviceLoaderWrapper' object has no attribute 'batch_size'` on TPU with accelerate>=0.11; the runner now reads loader attributes from the wrapped loader
+
+- `catalyst.utils.distributed` (`get_backend`, `get_rank`, `get_world_size`) crashed on torch_xla>=2.1 (PJRT), breaking AUC, precision/recall/F1, confusion matrix and segmentation metrics on TPU; it now uses `torch_xla.runtime`
+
+- TPU metric reduction failed with `UnpicklingError` on torch>=2.6: `xm.mesh_reduce` pickles its input, and `torch.load` now loads back only plain types by default; values are passed as floats
+
+- TPU runs did not train: the model and the optimizer were prepared in separate calls, and moving a model to XLA creates new parameters, so the optimizer kept updating the old CPU ones; on XLA they are now prepared together
+
+
+## [22.04] - 2022-04-29
+
+### Added
+
+- `catalyst-tune` for Config API added [#1411](https://github.com/catalyst-team/catalyst/pull/1411)
 
 
 ## [22.02.1] - 2022-02-27

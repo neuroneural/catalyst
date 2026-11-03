@@ -183,8 +183,9 @@ class DistributedXLAEngine(Engine):
         Returns:
             wrapped function (if needed).
         """
-        world_size: int = 8
-        return xmp.spawn(fn, args=(world_size,), nprocs=world_size, start_method="fork")
+        world_size: int = 8  # placeholder, setup() ignores it
+        # nprocs=None uses every device; torch_xla 2.9 rejects nprocs=8
+        return xmp.spawn(fn, args=(world_size,), nprocs=None, start_method="fork")
 
     def setup(self, local_rank: int, world_size: int):
         """Initialize DDP variables and processes if required.
@@ -198,10 +199,8 @@ class DistributedXLAEngine(Engine):
 
     def mean_reduce_ddp_metrics(self, metrics: Dict) -> Dict:
         """Syncs ``metrics`` over ``world_size`` in the distributed mode."""
-        metrics = {
-            k: xm.mesh_reduce(k, v.item() if isinstance(v, torch.Tensor) else v, np.mean)
-            for k, v in metrics.items()
-        }
+        # mesh_reduce pickles values; torch>=2.6 loads back only plain types
+        metrics = {k: xm.mesh_reduce(k, float(v), np.mean) for k, v in metrics.items()}
         return metrics
 
 

@@ -15,6 +15,7 @@ from catalyst.core.misc import (
     is_str_intersections,
     sort_callbacks_by_order,
 )
+from catalyst.data.loader import ILoaderWrapper
 from catalyst.typing import (
     RunnerCriterion,
     RunnerModel,
@@ -237,6 +238,16 @@ class IRunner(ICallback, ILogger, ABC):
         self.optimizer = self._setup_optimizer(model=self.model)
         self.scheduler = self._setup_scheduler(optimizer=self.optimizer)
 
+        if (
+            self.engine.distributed_type in ("TPU", "XLA")  # XLA since accelerate 0.28
+            and isinstance(self.model, torch.nn.Module)
+            and isinstance(self.optimizer, torch.optim.Optimizer)
+        ):
+            # on XLA the moved model gets new parameters; accelerate re-points
+            # the optimizer to them only if both are prepared in one call
+            self.model, self.optimizer = self.engine.prepare(self.model, self.optimizer)
+            return
+
         if isinstance(self.model, torch.nn.Module):
             self.model = self.engine.prepare(self.model)
         elif isinstance(self.model, dict):
@@ -298,9 +309,19 @@ class IRunner(ICallback, ILogger, ABC):
         self.is_valid_loader: bool = self.loader_key.startswith("valid")
         # Anything that is not train or valid is inference
         self.is_infer_loader: bool = not (self.is_train_loader or self.is_valid_loader)
-        self.loader_batch_size: int = get_loader_batch_size(self.loader)
+        loader = self.loader
+        if self.engine.distributed_type in ("TPU", "XLA"):
+            from torch_xla.distributed.parallel_loader import MpDeviceLoader
+
+            # Catalyst wrappers can sit outside Accelerate's XLA device loader.
+            device_loader = loader
+            while isinstance(device_loader, ILoaderWrapper):
+                device_loader = device_loader.origin
+            if isinstance(device_loader, MpDeviceLoader):
+                loader = device_loader._loader
+        self.loader_batch_size: int = get_loader_batch_size(loader)
         self.loader_batch_len: int = len(self.loader)
-        self.loader_sample_len: int = get_loader_num_samples(self.loader)
+        self.loader_sample_len: int = get_loader_num_samples(loader)
         self.loader_batch_step: int = 0
         self.loader_sample_step: int = 0
         self.loader_metrics: Dict = defaultdict(None)
@@ -310,8 +331,8 @@ class IRunner(ICallback, ILogger, ABC):
         set_global_seed(self.seed + max(0, self.engine.process_index) + self.epoch_step)
 
         maybe_recursive_call(self.model, "train", mode=self.is_train_loader)
-        if isinstance(self.loader.sampler, DistributedSampler):
-            self.loader.sampler.set_epoch(self.epoch_step)
+        if isinstance(loader.sampler, DistributedSampler):
+            loader.sampler.set_epoch(self.epoch_step)
 
     def on_batch_start(self, runner: "IRunner"):
         """Event handler."""
